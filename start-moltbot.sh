@@ -72,21 +72,31 @@ should_restore_from_r2() {
     fi
 }
 
-if [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
+if [ -d "$BACKUP_DIR/clawdbot" ] && [ "$(ls -A $BACKUP_DIR/clawdbot 2>/dev/null)" ]; then
     if should_restore_from_r2; then
         echo "Restoring from R2 backup at $BACKUP_DIR/clawdbot..."
+        # SECURITY: Remove any clawdbot.json from R2 backup - it may contain
+        # embedded API keys from previous syncs before credential exclusion was added.
+        # The config is regenerated from environment variables below.
+        if [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
+            echo "WARNING: Found clawdbot.json in R2 backup (may contain credentials). Removing from backup."
+            rm -f "$BACKUP_DIR/clawdbot/clawdbot.json"
+        fi
         cp -a "$BACKUP_DIR/clawdbot/." "$CONFIG_DIR/"
         # Copy the sync timestamp to local so we know what version we have
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        echo "Restored config from R2 backup"
+        echo "Restored config from R2 backup (excluding credentials)"
     fi
 elif [ -f "$BACKUP_DIR/clawdbot.json" ]; then
     # Legacy backup format (flat structure)
+    echo "WARNING: Legacy R2 backup format detected. clawdbot.json in R2 may contain credentials."
     if should_restore_from_r2; then
         echo "Restoring from legacy R2 backup at $BACKUP_DIR..."
         cp -a "$BACKUP_DIR/." "$CONFIG_DIR/"
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        echo "Restored config from legacy R2 backup"
+        # Remove the legacy clawdbot.json from R2 to prevent future credential exposure
+        rm -f "$BACKUP_DIR/clawdbot.json"
+        echo "Restored config from legacy R2 backup (cleaned up credentials)"
     fi
 elif [ -d "$BACKUP_DIR" ]; then
     echo "R2 mounted at $BACKUP_DIR but no backup data found yet"
