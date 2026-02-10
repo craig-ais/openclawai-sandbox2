@@ -249,7 +249,9 @@ if (isOpenAI) {
     config.agents.defaults.models['openai/gpt-5.2'] = { alias: 'GPT-5.2' };
     config.agents.defaults.models['openai/gpt-5'] = { alias: 'GPT-5' };
     config.agents.defaults.models['openai/gpt-4.5-preview'] = { alias: 'GPT-4.5' };
-    config.agents.defaults.model.primary = 'openai/gpt-5.2';
+    // Use DEFAULT_MODEL env var if set, otherwise default to gpt-5.2
+    config.agents.defaults.model.primary = process.env.DEFAULT_MODEL || 'openai/gpt-5.2';
+    console.log('Primary model:', config.agents.defaults.model.primary);
 } else if (baseUrl) {
     console.log('Configuring Anthropic provider with base URL:', baseUrl);
     config.models = config.models || {};
@@ -273,16 +275,57 @@ if (isOpenAI) {
     config.agents.defaults.models['anthropic/claude-opus-4-5-20251101'] = { alias: 'Opus 4.5' };
     config.agents.defaults.models['anthropic/claude-sonnet-4-5-20250929'] = { alias: 'Sonnet 4.5' };
     config.agents.defaults.models['anthropic/claude-haiku-4-5-20251001'] = { alias: 'Haiku 4.5' };
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5-20251101';
+    // Use DEFAULT_MODEL env var if set, otherwise default to Sonnet (cost-effective default)
+    config.agents.defaults.model.primary = process.env.DEFAULT_MODEL || 'anthropic/claude-sonnet-4-5-20250929';
+    console.log('Primary model:', config.agents.defaults.model.primary);
 } else {
     // Default to Anthropic without custom base URL (uses built-in pi-ai catalog)
-    config.agents.defaults.model.primary = 'anthropic/claude-opus-4-5';
+    // Default to Sonnet instead of Opus for cost optimization (see issue #3)
+    config.agents.defaults.model.primary = process.env.DEFAULT_MODEL || 'anthropic/claude-sonnet-4-5';
+    console.log('Primary model:', config.agents.defaults.model.primary);
+}
+
+// ============================================================
+// COST OPTIMIZATION: Token and model controls
+// ============================================================
+
+// Context token limit — controls how much conversation history is sent per request
+// Reduces input token costs significantly (see issue #4)
+if (process.env.CONTEXT_TOKENS) {
+    const contextTokens = parseInt(process.env.CONTEXT_TOKENS, 10);
+    if (!isNaN(contextTokens) && contextTokens > 0) {
+        config.agents.defaults.contextTokens = contextTokens;
+        console.log('Context tokens limit:', contextTokens);
+    }
+}
+
+// Max response tokens — limits output token cost per response
+if (process.env.MAX_RESPONSE_TOKENS) {
+    const maxResponseTokens = parseInt(process.env.MAX_RESPONSE_TOKENS, 10);
+    if (!isNaN(maxResponseTokens) && maxResponseTokens > 0) {
+        config.agents.defaults.maxResponseTokens = maxResponseTokens;
+        console.log('Max response tokens:', maxResponseTokens);
+    }
+}
+
+// Heartbeat model override — use a cheap model for periodic checks (see issue #5)
+// Heartbeats fire every 30m by default; using the primary model wastes tokens
+if (process.env.HEARTBEAT_MODEL || process.env.HEARTBEAT_INTERVAL) {
+    config.agents.defaults.heartbeat = config.agents.defaults.heartbeat || {};
+    if (process.env.HEARTBEAT_MODEL) {
+        config.agents.defaults.heartbeat.model = process.env.HEARTBEAT_MODEL;
+        console.log('Heartbeat model:', process.env.HEARTBEAT_MODEL);
+    }
+    if (process.env.HEARTBEAT_INTERVAL) {
+        config.agents.defaults.heartbeat.every = process.env.HEARTBEAT_INTERVAL;
+        console.log('Heartbeat interval:', process.env.HEARTBEAT_INTERVAL);
+    }
 }
 
 // Write updated config
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration updated successfully');
-console.log('Config:', JSON.stringify(config, null, 2));
+// Note: Do NOT log the full config — it contains API keys and bot tokens (see issue #6)
 EOFNODE
 
 # ============================================================

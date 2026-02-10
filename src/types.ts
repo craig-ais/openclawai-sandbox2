@@ -39,6 +39,15 @@ export interface MoltbotEnv {
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
+  // Gemini API key for memory embeddings + audio transcription
+  GEMINI_API_KEY?: string;
+  // Cost optimization: model and token controls
+  DEFAULT_MODEL?: string; // Primary model override (e.g., 'anthropic/claude-sonnet-4-5-20250929'). Defaults to sonnet.
+  HEARTBEAT_MODEL?: string; // Model for heartbeat checks (e.g., 'google/gemini-2.5-flash-lite'). Defaults to primary model.
+  HEARTBEAT_INTERVAL?: string; // Heartbeat interval (e.g., '30m', '1h'). Defaults to '30m'.
+  CONTEXT_TOKENS?: string; // Max context tokens per request (e.g., '16000'). Controls conversation history size.
+  MAX_RESPONSE_TOKENS?: string; // Max output tokens per response (e.g., '4096').
+  AI_GATEWAY_CACHE_TTL?: string; // Cache TTL in seconds for AI Gateway (e.g., '300').
 }
 
 /**
