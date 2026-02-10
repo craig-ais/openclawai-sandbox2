@@ -123,35 +123,13 @@ debug.get('/gateway-api', async (c) => {
   }
 });
 
-// GET /debug/cli - Test moltbot CLI commands (CLI is still named clawdbot)
+// GET /debug/cli - REMOVED: Arbitrary command execution is a security risk.
+// See: https://github.com/craig-ais/openclawai-sandbox2/issues/2
 debug.get('/cli', async (c) => {
-  const sandbox = c.get('sandbox');
-  const cmd = c.req.query('cmd') || 'clawdbot --help';
-  
-  try {
-    const proc = await sandbox.startProcess(cmd);
-    
-    // Wait longer for command to complete
-    let attempts = 0;
-    while (attempts < 30) {
-      await new Promise(r => setTimeout(r, 500));
-      if (proc.status !== 'running') break;
-      attempts++;
-    }
-
-    const logs = await proc.getLogs();
-    return c.json({
-      command: cmd,
-      status: proc.status,
-      exitCode: proc.exitCode,
-      attempts,
-      stdout: logs.stdout || '',
-      stderr: logs.stderr || '',
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return c.json({ error: errorMessage, command: cmd }, 500);
-  }
+  return c.json({
+    error: 'This endpoint has been removed for security reasons.',
+    hint: 'Use /debug/version or /debug/processes for diagnostics.',
+  }, 410);
 });
 
 // GET /debug/logs - Returns container logs for debugging
@@ -348,47 +326,18 @@ debug.get('/env', async (c) => {
     dev_mode: c.env.DEV_MODE,
     debug_routes: c.env.DEBUG_ROUTES,
     bind_mode: c.env.CLAWDBOT_BIND_MODE,
-    cf_access_team_domain: c.env.CF_ACCESS_TEAM_DOMAIN,
+    has_cf_access_team_domain: !!c.env.CF_ACCESS_TEAM_DOMAIN,
     has_cf_access_aud: !!c.env.CF_ACCESS_AUD,
   });
 });
 
-// GET /debug/container-config - Read the moltbot config from inside the container
+// GET /debug/container-config - REMOVED: Exposes raw credentials (API keys, bot tokens).
+// See: https://github.com/craig-ais/openclawai-sandbox2/issues/8
 debug.get('/container-config', async (c) => {
-  const sandbox = c.get('sandbox');
-  
-  try {
-    const proc = await sandbox.startProcess('cat /root/.clawdbot/clawdbot.json');
-    
-    let attempts = 0;
-    while (attempts < 10) {
-      await new Promise(r => setTimeout(r, 200));
-      if (proc.status !== 'running') break;
-      attempts++;
-    }
-
-    const logs = await proc.getLogs();
-    const stdout = logs.stdout || '';
-    const stderr = logs.stderr || '';
-    
-    let config = null;
-    try {
-      config = JSON.parse(stdout);
-    } catch {
-      // Not valid JSON
-    }
-    
-    return c.json({
-      status: proc.status,
-      exitCode: proc.exitCode,
-      config,
-      raw: config ? undefined : stdout,
-      stderr,
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return c.json({ error: errorMessage }, 500);
-  }
+  return c.json({
+    error: 'This endpoint has been removed for security reasons.',
+    hint: 'Use /debug/env for a sanitized view of configuration status.',
+  }, 410);
 });
 
 export { debug };

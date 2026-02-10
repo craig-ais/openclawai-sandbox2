@@ -8,6 +8,15 @@ import { R2_MOUNT_PATH } from '../config';
 const CLI_TIMEOUT_MS = 20000;
 
 /**
+ * Validate that a requestId contains only safe characters.
+ * Prevents command injection via shell interpolation.
+ */
+const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+function isValidRequestId(id: string): boolean {
+  return SAFE_ID_PATTERN.test(id) && id.length <= 128;
+}
+
+/**
  * API routes
  * - /api/admin/* - Protected admin API routes (Cloudflare Access required)
  * 
@@ -80,6 +89,11 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     return c.json({ error: 'requestId is required' }, 400);
   }
 
+  // Validate requestId to prevent command injection
+  if (!isValidRequestId(requestId)) {
+    return c.json({ error: 'Invalid requestId format. Only alphanumeric characters, hyphens, and underscores are allowed.' }, 400);
+  }
+
   try {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
@@ -143,6 +157,15 @@ adminApi.post('/devices/approve-all', async (c) => {
     const results: Array<{ requestId: string; success: boolean; error?: string }> = [];
 
     for (const device of pending) {
+      // Validate each requestId from parsed CLI output to prevent injection
+      if (!isValidRequestId(device.requestId)) {
+        results.push({
+          requestId: device.requestId,
+          success: false,
+          error: 'Invalid requestId format',
+        });
+        continue;
+      }
       try {
         const approveProc = await sandbox.startProcess(`clawdbot devices approve ${device.requestId} --url ws://localhost:18789`);
         await waitForProcess(approveProc, CLI_TIMEOUT_MS);

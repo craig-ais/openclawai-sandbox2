@@ -175,12 +175,11 @@ app.use('*', async (c, next) => {
       return c.html(html, 503);
     }
 
-    // Return JSON error for API requests
+    // Return JSON error for API requests (don't leak specific variable names)
     return c.json({
       error: 'Configuration error',
-      message: 'Required environment variables are not configured',
-      missing: missingVars,
-      hint: 'Set these using: wrangler secret put <VARIABLE_NAME>',
+      message: `Required environment variables are not configured (${missingVars.length} missing). Check worker logs for details.`,
+      hint: 'See deployment documentation for required secrets.',
     }, 503);
   }
 
@@ -309,7 +308,9 @@ app.all('*', async (c) => {
     // Relay messages from client to container
     serverWs.addEventListener('message', (event) => {
       if (debugLogs) {
-        console.log('[WS] Client -> Container:', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 200) : '(binary)');
+        // Log metadata only — never log message content (may contain sensitive user prompts/responses)
+        const size = typeof event.data === 'string' ? event.data.length : '(binary)';
+        console.log('[WS] Client -> Container: type=%s size=%s', typeof event.data, size);
       }
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
@@ -321,7 +322,9 @@ app.all('*', async (c) => {
     // Relay messages from container to client, with error transformation
     containerWs.addEventListener('message', (event) => {
       if (debugLogs) {
-        console.log('[WS] Container -> Client (raw):', typeof event.data, typeof event.data === 'string' ? event.data.slice(0, 500) : '(binary)');
+        // Log metadata only — never log message content (may contain sensitive AI responses)
+        const size = typeof event.data === 'string' ? event.data.length : '(binary)';
+        console.log('[WS] Container -> Client: type=%s size=%s', typeof event.data, size);
       }
       let data = event.data;
 
