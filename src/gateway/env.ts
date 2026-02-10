@@ -56,5 +56,17 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
 
+  // Gemini API key for memory embeddings + audio transcription
+  if (env.GEMINI_API_KEY) envVars.GEMINI_API_KEY = env.GEMINI_API_KEY;
+
+  // Cost optimization: model and token controls
+  // These are read by start-moltbot.sh to configure agent defaults
+  if (env.DEFAULT_MODEL) envVars.DEFAULT_MODEL = env.DEFAULT_MODEL;
+  if (env.HEARTBEAT_MODEL) envVars.HEARTBEAT_MODEL = env.HEARTBEAT_MODEL;
+  if (env.HEARTBEAT_INTERVAL) envVars.HEARTBEAT_INTERVAL = env.HEARTBEAT_INTERVAL;
+  if (env.CONTEXT_TOKENS) envVars.CONTEXT_TOKENS = env.CONTEXT_TOKENS;
+  if (env.MAX_RESPONSE_TOKENS) envVars.MAX_RESPONSE_TOKENS = env.MAX_RESPONSE_TOKENS;
+  if (env.AI_GATEWAY_CACHE_TTL) envVars.AI_GATEWAY_CACHE_TTL = env.AI_GATEWAY_CACHE_TTL;
+
   return envVars;
 }
