@@ -111,12 +111,9 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 /**
  * Delete session files older than the specified retention period.
  *
- * Targets JSONL session files in:
- * - /root/.clawdbot/sessions/
- * - /root/.clawdbot/agents/*/sessions/
- * And their R2 backup equivalents.
- *
- * Preserves: memory files, skills, config, credentials.
+ * Targets JSONL and markdown files in session directories
+ * (both container and R2 backup), including per-agent sessions.
+ * Preserves memory files, skills, config, and credentials.
  *
  * @param sandbox - The sandbox instance
  * @param env - Worker environment bindings
