@@ -70,6 +70,15 @@
   "browser": {
     "binding": "BROWSER",
   },
+  // Rate limiting: global limiter for all HTTP requests (per IP, per 60s)
+  // Adjust 'limit' to change the max requests per minute per client IP.
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
   // Note: CF_ACCOUNT_ID should be set via `wrangler secret put CF_ACCOUNT_ID`
   // Secrets to configure via `wrangler secret put`:
   // - ANTHROPIC_API_KEY: Your Anthropic API key
