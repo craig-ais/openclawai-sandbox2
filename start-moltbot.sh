@@ -1,24 +1,23 @@
 #!/bin/bash
-# Startup script for Moltbot in Cloudflare Sandbox
+# Startup script for OpenClaw in Cloudflare Sandbox
 # This script:
 # 1. Restores config from R2 backup if available
-# 2. Configures moltbot from environment variables
-# 3. Starts a background sync to backup config to R2
-# 4. Starts the gateway
+# 2. Configures OpenClaw from environment variables
+# 3. Starts the gateway (R2 backup sync handled by Worker cron)
 
 set -e
 
-# Check if clawdbot gateway is already running - bail early if so
-# Note: CLI is still named "clawdbot" until upstream renames it
-if pgrep -f "clawdbot gateway" > /dev/null 2>&1; then
-    echo "Moltbot gateway is already running, exiting."
+# Check if openclaw gateway is already running - bail early if so
+if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
+    echo "OpenClaw gateway is already running, exiting."
     exit 0
 fi
 
-# Paths (clawdbot paths are used internally - upstream hasn't renamed yet)
-CONFIG_DIR="/root/.clawdbot"
-CONFIG_FILE="$CONFIG_DIR/clawdbot.json"
-TEMPLATE_DIR="/root/.clawdbot-templates"
+# Paths — openclaw uses ~/.openclaw/openclaw.json
+# The openclaw package auto-creates ~/.clawdbot -> ~/.openclaw symlink
+CONFIG_DIR="/root/.openclaw"
+CONFIG_FILE="$CONFIG_DIR/openclaw.json"
+TEMPLATE_DIR="/root/.openclaw-templates"
 TEMPLATE_FILE="$TEMPLATE_DIR/moltbot.json.template"
 BACKUP_DIR="/data/moltbot"
 
@@ -31,9 +30,9 @@ mkdir -p "$CONFIG_DIR"
 # ============================================================
 # RESTORE FROM R2 BACKUP
 # ============================================================
-# Check if R2 backup exists by looking for clawdbot.json
+# Check if R2 backup exists
 # The BACKUP_DIR may exist but be empty if R2 was just mounted
-# Note: backup structure is $BACKUP_DIR/clawdbot/ and $BACKUP_DIR/skills/
+# Note: backup structure is $BACKUP_DIR/clawdbot/ (legacy) or $BACKUP_DIR/openclaw/ and $BACKUP_DIR/skills/
 
 # Helper function to check if R2 backup is newer than local
 should_restore_from_r2() {
@@ -72,29 +71,35 @@ should_restore_from_r2() {
     fi
 }
 
-if [ -d "$BACKUP_DIR/clawdbot" ] && [ "$(ls -A $BACKUP_DIR/clawdbot 2>/dev/null)" ]; then
+# Try new openclaw/ backup path first, fall back to legacy clawdbot/ path
+if [ -d "$BACKUP_DIR/openclaw" ] && [ "$(ls -A $BACKUP_DIR/openclaw 2>/dev/null)" ]; then
     if should_restore_from_r2; then
-        echo "Restoring from R2 backup at $BACKUP_DIR/clawdbot..."
-        # SECURITY: Remove any clawdbot.json from R2 backup - it may contain
-        # embedded API keys from previous syncs before credential exclusion was added.
-        # The config is regenerated from environment variables below.
-        if [ -f "$BACKUP_DIR/clawdbot/clawdbot.json" ]; then
-            echo "WARNING: Found clawdbot.json in R2 backup (may contain credentials). Removing from backup."
-            rm -f "$BACKUP_DIR/clawdbot/clawdbot.json"
-        fi
-        cp -a "$BACKUP_DIR/clawdbot/." "$CONFIG_DIR/"
-        # Copy the sync timestamp to local so we know what version we have
+        echo "Restoring from R2 backup at $BACKUP_DIR/openclaw..."
+        # SECURITY: Remove any config files from R2 backup - they may contain
+        # embedded API keys. Config is regenerated from environment variables below.
+        rm -f "$BACKUP_DIR/openclaw/openclaw.json" 2>/dev/null
+        rm -f "$BACKUP_DIR/openclaw/clawdbot.json" 2>/dev/null
+        cp -a "$BACKUP_DIR/openclaw/." "$CONFIG_DIR/"
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
         echo "Restored config from R2 backup (excluding credentials)"
     fi
+elif [ -d "$BACKUP_DIR/clawdbot" ] && [ "$(ls -A $BACKUP_DIR/clawdbot 2>/dev/null)" ]; then
+    # Legacy backup path (clawdbot/ directory)
+    if should_restore_from_r2; then
+        echo "Restoring from legacy R2 backup at $BACKUP_DIR/clawdbot..."
+        rm -f "$BACKUP_DIR/clawdbot/clawdbot.json" 2>/dev/null
+        rm -f "$BACKUP_DIR/clawdbot/openclaw.json" 2>/dev/null
+        cp -a "$BACKUP_DIR/clawdbot/." "$CONFIG_DIR/"
+        cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
+        echo "Restored config from legacy R2 backup (excluding credentials)"
+    fi
 elif [ -f "$BACKUP_DIR/clawdbot.json" ]; then
-    # Legacy backup format (flat structure)
-    echo "WARNING: Legacy R2 backup format detected. clawdbot.json in R2 may contain credentials."
+    # Very old legacy backup format (flat structure)
+    echo "WARNING: Very old legacy R2 backup format detected."
     if should_restore_from_r2; then
         echo "Restoring from legacy R2 backup at $BACKUP_DIR..."
         cp -a "$BACKUP_DIR/." "$CONFIG_DIR/"
         cp -f "$BACKUP_DIR/.last-sync" "$CONFIG_DIR/.last-sync" 2>/dev/null || true
-        # Remove the legacy clawdbot.json from R2 to prevent future credential exposure
         rm -f "$BACKUP_DIR/clawdbot.json"
         echo "Restored config from legacy R2 backup (cleaned up credentials)"
     fi
@@ -146,7 +151,7 @@ fi
 node << EOFNODE
 const fs = require('fs');
 
-const configPath = '/root/.clawdbot/clawdbot.json';
+const configPath = '/root/.openclaw/openclaw.json';
 console.log('Updating config at:', configPath);
 let config = {};
 
@@ -342,11 +347,12 @@ EOFNODE
 # START GATEWAY
 # ============================================================
 # Note: R2 backup sync is handled by the Worker's cron trigger
-echo "Starting Moltbot Gateway..."
+echo "Starting OpenClaw Gateway..."
 echo "Gateway will be available on port 18789"
 
-# Clean up stale lock files
+# Clean up stale lock files (check both old and new paths)
 rm -f /tmp/clawdbot-gateway.lock 2>/dev/null || true
+rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
 
 BIND_MODE="lan"
@@ -354,8 +360,8 @@ echo "Dev mode: ${CLAWDBOT_DEV_MODE:-false}, Bind mode: $BIND_MODE"
 
 if [ -n "$CLAWDBOT_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
-    exec clawdbot gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE" --token "$CLAWDBOT_GATEWAY_TOKEN"
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE" --token "$CLAWDBOT_GATEWAY_TOKEN"
 else
     echo "Starting gateway with device pairing (no token)..."
-    exec clawdbot gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE"
+    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind "$BIND_MODE"
 fi

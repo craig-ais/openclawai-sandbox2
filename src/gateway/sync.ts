@@ -51,14 +51,15 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 
   // Sanity check: verify source has critical files before syncing
   // This prevents accidentally overwriting a good backup with empty/corrupted data
+  // Check for both openclaw.json (new) and clawdbot.json (legacy symlinked)
   try {
-    const checkProc = await sandbox.startProcess('test -f /root/.clawdbot/clawdbot.json && echo "ok"');
+    const checkProc = await sandbox.startProcess('test -f /root/.openclaw/openclaw.json -o -f /root/.clawdbot/clawdbot.json && echo "ok"');
     await waitForProcess(checkProc, 5000);
     const checkLogs = await checkProc.getLogs();
     if (!checkLogs.stdout?.includes('ok')) {
-      return { 
-        success: false, 
-        error: 'Sync aborted: source missing clawdbot.json',
+      return {
+        success: false,
+        error: 'Sync aborted: source missing config file',
         details: 'The local config directory is missing critical files. This could indicate corruption or an incomplete setup.',
       };
     }
@@ -72,10 +73,11 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 
   // Run rsync to backup config to R2
   // Note: Use --no-times because s3fs doesn't support setting timestamps
-  // SECURITY: Exclude clawdbot.json from backup - it contains embedded API keys
-  // and secrets injected by start-moltbot.sh. The config is regenerated from
+  // SECURITY: Exclude config files from backup - they contain embedded API keys
+  // and secrets injected by start-moltbot.sh. Config is regenerated from
   // environment variables on every container start, so it doesn't need persistence.
-  const syncCmd = `rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='clawdbot.json' /root/.clawdbot/ ${R2_MOUNT_PATH}/clawdbot/ && rsync -r --no-times --delete /root/clawd/skills/ ${R2_MOUNT_PATH}/skills/ && date -Iseconds > ${R2_MOUNT_PATH}/.last-sync`;
+  // Uses ~/.openclaw (canonical path); ~/.clawdbot is a symlink created by openclaw.
+  const syncCmd = `rsync -r --no-times --delete --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='openclaw.json' --exclude='clawdbot.json' /root/.openclaw/ ${R2_MOUNT_PATH}/openclaw/ && rsync -r --no-times --delete /root/clawd/skills/ ${R2_MOUNT_PATH}/skills/ && date -Iseconds > ${R2_MOUNT_PATH}/.last-sync`;
   
   try {
     const proc = await sandbox.startProcess(syncCmd);
@@ -83,7 +85,7 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
 
     // Check for success by reading the timestamp file
     // (process status may not update reliably in sandbox API)
-    // Note: backup structure is ${R2_MOUNT_PATH}/clawdbot/ and ${R2_MOUNT_PATH}/skills/
+    // Note: backup structure is ${R2_MOUNT_PATH}/openclaw/ and ${R2_MOUNT_PATH}/skills/
     const timestampProc = await sandbox.startProcess(`cat ${R2_MOUNT_PATH}/.last-sync`);
     await waitForProcess(timestampProc, 5000);
     const timestampLogs = await timestampProc.getLogs();
@@ -132,16 +134,16 @@ export async function cleanupOldSessions(sandbox: Sandbox, env: MoltbotEnv): Pro
     // Uses -mtime (modification time) to identify stale sessions
     // Only targets *.jsonl and *.md files in sessions/ directories
     const cleanupCmd = [
-      // Container session directories
-      `find /root/.clawdbot/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
-      `find /root/.clawdbot/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
-      `find /root/.clawdbot/agents/*/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
-      `find /root/.clawdbot/agents/*/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      // Container session directories (uses canonical ~/.openclaw path)
+      `find /root/.openclaw/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find /root/.openclaw/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find /root/.openclaw/agents/*/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find /root/.openclaw/agents/*/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
       // R2 backup session directories (if mounted)
-      `find ${R2_MOUNT_PATH}/clawdbot/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
-      `find ${R2_MOUNT_PATH}/clawdbot/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
-      `find ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
-      `find ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/openclaw/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/openclaw/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/openclaw/agents/*/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/openclaw/agents/*/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
     ].join('; ');
 
     const proc = await sandbox.startProcess(cleanupCmd);
@@ -190,12 +192,12 @@ export async function purgeSessions(sandbox: Sandbox, env: MoltbotEnv): Promise<
     }
 
     const purgeCmd = [
-      // Container session directories
-      `rm -rf /root/.clawdbot/sessions/* 2>/dev/null`,
-      `find /root/.clawdbot/agents/*/sessions/ -type f -delete 2>/dev/null`,
+      // Container session directories (uses canonical ~/.openclaw path)
+      `rm -rf /root/.openclaw/sessions/* 2>/dev/null`,
+      `find /root/.openclaw/agents/*/sessions/ -type f -delete 2>/dev/null`,
       // R2 backup session directories
-      `rm -rf ${R2_MOUNT_PATH}/clawdbot/sessions/* 2>/dev/null`,
-      `find ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -type f -delete 2>/dev/null`,
+      `rm -rf ${R2_MOUNT_PATH}/openclaw/sessions/* 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/openclaw/agents/*/sessions/ -type f -delete 2>/dev/null`,
     ].join('; ');
 
     const proc = await sandbox.startProcess(purgeCmd);
