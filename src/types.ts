@@ -48,6 +48,18 @@ export interface MoltbotEnv {
   CONTEXT_TOKENS?: string; // Max context tokens per request (e.g., '16000'). Controls conversation history size.
   MAX_RESPONSE_TOKENS?: string; // Max output tokens per response (e.g., '4096').
   AI_GATEWAY_CACHE_TTL?: string; // Cache TTL in seconds for AI Gateway (e.g., '300').
+  // Rate limiting bindings (configured in wrangler.jsonc)
+  RATE_LIMITER?: RateLimit; // Global rate limiter for all HTTP requests
+  WS_RATE_LIMIT_MSG?: string; // Max WebSocket messages per 5-min window before warning (default: '150')
+  WS_RATE_LIMIT_BLOCK?: string; // Max WebSocket messages per 5-min window before blocking (default: '300')
+}
+
+/**
+ * Cloudflare Workers Rate Limiting binding type.
+ * @see https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
+ */
+interface RateLimit {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 /**

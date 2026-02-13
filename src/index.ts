@@ -128,6 +128,37 @@ app.use('*', async (c, next) => {
   await next();
 });
 
+// Middleware: Rate limiting for all HTTP requests
+// Uses Cloudflare Workers Rate Limiting binding (configured in wrangler.jsonc).
+// This protects admin, debug, and proxy endpoints from abuse.
+// WebSocket messages are rate-limited separately (see catch-all handler below).
+app.use('*', async (c, next) => {
+  // Skip rate limiting if binding not configured (e.g., local dev)
+  if (!c.env.RATE_LIMITER) {
+    return next();
+  }
+
+  // Skip rate limiting for health checks and static assets
+  const url = new URL(c.req.url);
+  if (url.pathname === '/sandbox-health' || url.pathname.startsWith('/_admin/assets')) {
+    return next();
+  }
+
+  const clientIP = c.req.header('CF-Connecting-IP') || 'unknown';
+  const { success } = await c.env.RATE_LIMITER.limit({ key: clientIP });
+
+  if (!success) {
+    console.warn(`[RATE] Rate limit exceeded for ${clientIP} on ${url.pathname}`);
+    return c.json({
+      error: 'Rate limit exceeded',
+      message: 'Too many requests. Please wait a moment before trying again.',
+      retryAfter: 60,
+    }, 429);
+  }
+
+  return next();
+});
+
 // Middleware: Initialize sandbox for all requests
 app.use('*', async (c, next) => {
   const options = buildSandboxOptions(c.env);
@@ -306,13 +337,69 @@ app.all('*', async (c) => {
       console.log('[WS] serverWs.readyState:', serverWs.readyState);
     }
 
-    // Relay messages from client to container
+    // ── WebSocket message rate limiting ──
+    // Tracks client→container messages per 5-minute window.
+    // These are the messages that trigger LLM API calls and burn tokens.
+    // Container→client messages (responses) are not counted.
+    const WS_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+    const WS_WARN_LIMIT = parseInt(c.env.WS_RATE_LIMIT_MSG || '150', 10);
+    const WS_BLOCK_LIMIT = parseInt(c.env.WS_RATE_LIMIT_BLOCK || '300', 10);
+    let wsMessageCount = 0;
+    let wsWindowStart = Date.now();
+    let wsBlocked = false;
+    let wsWarned = false;
+
+    // Relay messages from client to container (with rate limiting)
     serverWs.addEventListener('message', (event) => {
       if (debugLogs) {
         // Log metadata only — never log message content (may contain sensitive user prompts/responses)
         const size = typeof event.data === 'string' ? event.data.length : '(binary)';
         console.log('[WS] Client -> Container: type=%s size=%s', typeof event.data, size);
       }
+
+      // Reset window if expired
+      const now = Date.now();
+      if (now - wsWindowStart > WS_WINDOW_MS) {
+        wsMessageCount = 0;
+        wsWindowStart = now;
+        wsBlocked = false;
+        wsWarned = false;
+      }
+
+      wsMessageCount++;
+
+      // Block: too many messages — likely a runaway automation loop
+      if (wsMessageCount > WS_BLOCK_LIMIT) {
+        if (!wsBlocked) {
+          wsBlocked = true;
+          console.error(`[WS] RATE LIMIT BLOCK: ${wsMessageCount} messages in ${WS_WINDOW_MS / 1000}s window — pausing relay`);
+          // Notify the client
+          if (serverWs.readyState === WebSocket.OPEN) {
+            serverWs.send(JSON.stringify({
+              type: 'error',
+              error: {
+                message: `Rate limit: ${wsMessageCount} messages in 5 minutes. Messages paused until window resets. This prevents runaway token costs.`,
+              },
+            }));
+          }
+        }
+        return; // Drop the message — don't relay to container
+      }
+
+      // Warn: approaching the limit
+      if (wsMessageCount > WS_WARN_LIMIT && !wsWarned) {
+        wsWarned = true;
+        console.warn(`[WS] RATE LIMIT WARNING: ${wsMessageCount} messages in ${WS_WINDOW_MS / 1000}s window`);
+        if (serverWs.readyState === WebSocket.OPEN) {
+          serverWs.send(JSON.stringify({
+            type: 'warning',
+            warning: {
+              message: `High message rate: ${wsMessageCount} messages in 5 minutes. Messages will be paused at ${WS_BLOCK_LIMIT} to prevent runaway token costs.`,
+            },
+          }));
+        }
+      }
+
       if (containerWs.readyState === WebSocket.OPEN) {
         containerWs.send(event.data);
       } else if (debugLogs) {
