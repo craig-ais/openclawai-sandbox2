@@ -40,9 +40,9 @@ adminApi.get('/devices', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    // Run moltbot CLI to list devices (CLI is still named clawdbot until upstream renames)
+    // Run OpenClaw CLI to list devices
     // Must specify --url to connect to the gateway running in the same container
-    const proc = await sandbox.startProcess('clawdbot devices list --json --url ws://localhost:18789');
+    const proc = await sandbox.startProcess('openclaw devices list --json --url ws://localhost:18789');
     await waitForProcess(proc, CLI_TIMEOUT_MS);
 
     const logs = await proc.getLogs();
@@ -98,8 +98,8 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    // Run moltbot CLI to approve the device (CLI is still named clawdbot)
-    const proc = await sandbox.startProcess(`clawdbot devices approve ${requestId} --url ws://localhost:18789`);
+    // Run OpenClaw CLI to approve the device
+    const proc = await sandbox.startProcess(`openclaw devices approve ${requestId} --url ws://localhost:18789`);
     await waitForProcess(proc, CLI_TIMEOUT_MS);
 
     const logs = await proc.getLogs();
@@ -130,8 +130,8 @@ adminApi.post('/devices/approve-all', async (c) => {
     // Ensure moltbot is running first
     await ensureMoltbotGateway(sandbox, c.env);
 
-    // First, get the list of pending devices (CLI is still named clawdbot)
-    const listProc = await sandbox.startProcess('clawdbot devices list --json --url ws://localhost:18789');
+    // First, get the list of pending devices
+    const listProc = await sandbox.startProcess('openclaw devices list --json --url ws://localhost:18789');
     await waitForProcess(listProc, CLI_TIMEOUT_MS);
 
     const listLogs = await listProc.getLogs();
@@ -167,7 +167,7 @@ adminApi.post('/devices/approve-all', async (c) => {
         continue;
       }
       try {
-        const approveProc = await sandbox.startProcess(`clawdbot devices approve ${device.requestId} --url ws://localhost:18789`);
+        const approveProc = await sandbox.startProcess(`openclaw devices approve ${device.requestId} --url ws://localhost:18789`);
         await waitForProcess(approveProc, CLI_TIMEOUT_MS);
 
         const approveLogs = await approveProc.getLogs();
@@ -370,7 +370,7 @@ adminApi.get('/data/export', async (c) => {
     // Create a tar.gz archive of the R2 backup directory
     const archivePath = '/tmp/moltbot-export.tar.gz';
     const tarProc = await sandbox.startProcess(
-      `tar -czf ${archivePath} -C ${R2_MOUNT_PATH} clawdbot/ skills/ .last-sync 2>/dev/null; echo $?`
+      `tar -czf ${archivePath} -C ${R2_MOUNT_PATH} openclaw/ skills/ .last-sync 2>/dev/null; echo $?`
     );
     await waitForProcess(tarProc, 60000); // 60s timeout for large backups
 
@@ -399,7 +399,7 @@ adminApi.get('/data/export', async (c) => {
     return new Response(catLogs.stdout, {
       headers: {
         'Content-Type': 'application/gzip',
-        'Content-Disposition': `attachment; filename="moltbot-backup-${timestamp}.tar.gz"`,
+        'Content-Disposition': `attachment; filename="openclaw-backup-${timestamp}.tar.gz"`,
       },
     });
   } catch (error) {
@@ -417,11 +417,11 @@ adminApi.get('/data/status', async (c) => {
     // Count session files and get total size
     const statsCmd = [
       `echo "CONTAINER:"`,
-      `find /root/.clawdbot/sessions/ /root/.clawdbot/agents/*/sessions/ -name '*.jsonl' -o -name '*.md' 2>/dev/null | wc -l`,
-      `du -sh /root/.clawdbot/sessions/ 2>/dev/null | cut -f1 || echo "0"`,
+      `find /root/.openclaw/sessions/ /root/.openclaw/agents/*/sessions/ -name '*.jsonl' -o -name '*.md' 2>/dev/null | wc -l`,
+      `du -sh /root/.openclaw/sessions/ 2>/dev/null | cut -f1 || echo "0"`,
       `echo "R2:"`,
-      `find ${R2_MOUNT_PATH}/clawdbot/sessions/ ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -name '*.jsonl' -o -name '*.md' 2>/dev/null | wc -l`,
-      `du -sh ${R2_MOUNT_PATH}/clawdbot/sessions/ 2>/dev/null | cut -f1 || echo "0"`,
+      `find ${R2_MOUNT_PATH}/openclaw/sessions/ ${R2_MOUNT_PATH}/openclaw/agents/*/sessions/ -name '*.jsonl' -o -name '*.md' 2>/dev/null | wc -l`,
+      `du -sh ${R2_MOUNT_PATH}/openclaw/sessions/ 2>/dev/null | cut -f1 || echo "0"`,
     ].join('; ');
 
     const proc = await sandbox.startProcess(statsCmd);
