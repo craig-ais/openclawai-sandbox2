@@ -52,6 +52,8 @@ export interface MoltbotEnv {
   RATE_LIMITER?: RateLimit; // Global rate limiter for all HTTP requests
   WS_RATE_LIMIT_MSG?: string; // Max WebSocket messages per 5-min window before warning (default: '150')
   WS_RATE_LIMIT_BLOCK?: string; // Max WebSocket messages per 5-min window before blocking (default: '300')
+  // Data retention
+  DATA_RETENTION_DAYS?: string; // Auto-delete session files older than N days (default: '90'). Set to '0' to disable.
 }
 
 /**

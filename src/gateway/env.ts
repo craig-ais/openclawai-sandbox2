@@ -68,5 +68,8 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.MAX_RESPONSE_TOKENS) envVars.MAX_RESPONSE_TOKENS = env.MAX_RESPONSE_TOKENS;
   if (env.AI_GATEWAY_CACHE_TTL) envVars.AI_GATEWAY_CACHE_TTL = env.AI_GATEWAY_CACHE_TTL;
 
+  // Data retention: passed to container for potential use by cleanup scripts
+  if (env.DATA_RETENTION_DAYS) envVars.DATA_RETENTION_DAYS = env.DATA_RETENTION_DAYS;
+
   return envVars;
 }
