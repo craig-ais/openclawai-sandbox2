@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, syncToR2 } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, syncToR2, cleanupOldSessions } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -507,8 +507,16 @@ app.all('*', async (c) => {
 });
 
 /**
+ * Track the last cleanup date to avoid running retention cleanup on every
+ * cron tick (every 5 minutes). Cleanup only needs to run once per day.
+ */
+let lastCleanupDate = '';
+
+/**
  * Scheduled handler for cron triggers.
- * Syncs moltbot config/state from container to R2 for persistence.
+ * Runs every 5 minutes (configured in wrangler.jsonc):
+ * 1. Syncs moltbot config/state from container to R2
+ * 2. Once per day: runs session retention cleanup
  */
 async function scheduled(
   _event: ScheduledEvent,
@@ -518,6 +526,7 @@ async function scheduled(
   const options = buildSandboxOptions(env);
   const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
 
+  // Step 1: Backup sync to R2
   console.log('[cron] Starting backup sync to R2...');
   const result = await syncToR2(sandbox, env);
 
@@ -525,6 +534,22 @@ async function scheduled(
     console.log('[cron] Backup sync completed successfully at', result.lastSync);
   } else {
     console.error('[cron] Backup sync failed:', result.error, result.details || '');
+  }
+
+  // Step 2: Session retention cleanup (once per day)
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const retentionDays = parseInt(env.DATA_RETENTION_DAYS || '90', 10);
+
+  if (retentionDays > 0 && today !== lastCleanupDate) {
+    lastCleanupDate = today;
+    console.log(`[cron] Running daily session cleanup (retention: ${retentionDays} days)...`);
+
+    const cleanupResult = await cleanupOldSessions(sandbox, env);
+    if (cleanupResult.success) {
+      console.log('[cron] Cleanup completed:', cleanupResult.details);
+    } else {
+      console.error('[cron] Cleanup failed:', cleanupResult.error, cleanupResult.details || '');
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, mountR2Storage, syncToR2, waitForProcess } from '../gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, mountR2Storage, syncToR2, cleanupOldSessions, purgeSessions, waitForProcess } from '../gateway';
 import { R2_MOUNT_PATH } from '../config';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
@@ -298,6 +298,162 @@ adminApi.post('/gateway/restart', async (c) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// POST /api/admin/data/purge - Purge all session data from container and R2
+adminApi.post('/data/purge', async (c) => {
+  // Require explicit confirmation to prevent accidental data loss
+  const confirm = c.req.query('confirm');
+  if (confirm !== 'true') {
+    return c.json({
+      error: 'Confirmation required',
+      message: 'This will permanently delete ALL session/conversation data. Add ?confirm=true to proceed.',
+      hint: 'Memory files, skills, and configuration will be preserved.',
+    }, 400);
+  }
+
+  const sandbox = c.get('sandbox');
+  const result = await purgeSessions(sandbox, c.env);
+
+  if (result.success) {
+    console.log('[DATA] Session data purged successfully');
+    return c.json({
+      success: true,
+      message: result.details,
+    });
+  } else {
+    console.error('[DATA] Purge failed:', result.error, result.details);
+    return c.json({
+      success: false,
+      error: result.error,
+      details: result.details,
+    }, 500);
+  }
+});
+
+// POST /api/admin/data/cleanup - Run retention cleanup manually
+adminApi.post('/data/cleanup', async (c) => {
+  const sandbox = c.get('sandbox');
+  const result = await cleanupOldSessions(sandbox, c.env);
+
+  if (result.success) {
+    console.log('[DATA] Cleanup completed:', result.details);
+    return c.json({
+      success: true,
+      deletedCount: result.deletedCount,
+      message: result.details,
+      retentionDays: parseInt(c.env.DATA_RETENTION_DAYS || '90', 10),
+    });
+  } else {
+    console.error('[DATA] Cleanup failed:', result.error, result.details);
+    return c.json({
+      success: false,
+      error: result.error,
+      details: result.details,
+    }, 500);
+  }
+});
+
+// GET /api/admin/data/export - Download R2 backup as tar.gz
+adminApi.get('/data/export', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  // Mount R2 if configured
+  if (!c.env.R2_ACCESS_KEY_ID || !c.env.R2_SECRET_ACCESS_KEY || !c.env.CF_ACCOUNT_ID) {
+    return c.json({ error: 'R2 storage is not configured. No backup to export.' }, 400);
+  }
+
+  try {
+    await mountR2Storage(sandbox, c.env);
+
+    // Create a tar.gz archive of the R2 backup directory
+    const archivePath = '/tmp/moltbot-export.tar.gz';
+    const tarProc = await sandbox.startProcess(
+      `tar -czf ${archivePath} -C ${R2_MOUNT_PATH} clawdbot/ skills/ .last-sync 2>/dev/null; echo $?`
+    );
+    await waitForProcess(tarProc, 60000); // 60s timeout for large backups
+
+    const tarLogs = await tarProc.getLogs();
+    const exitCode = tarLogs.stdout?.trim();
+    if (exitCode !== '0') {
+      return c.json({
+        error: 'Failed to create export archive',
+        details: tarLogs.stderr || 'tar exited with non-zero status',
+      }, 500);
+    }
+
+    // Read the archive and stream it back
+    const catProc = await sandbox.startProcess(`cat ${archivePath}`);
+    await waitForProcess(catProc, 60000);
+    const catLogs = await catProc.getLogs();
+
+    // Clean up the temp file
+    sandbox.startProcess(`rm -f ${archivePath}`).catch(() => {});
+
+    if (!catLogs.stdout) {
+      return c.json({ error: 'Export archive is empty' }, 500);
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    return new Response(catLogs.stdout, {
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="moltbot-backup-${timestamp}.tar.gz"`,
+      },
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// GET /api/admin/data/status - Get data retention status and session info
+adminApi.get('/data/status', async (c) => {
+  const sandbox = c.get('sandbox');
+  const retentionDays = parseInt(c.env.DATA_RETENTION_DAYS || '90', 10);
+
+  try {
+    // Count session files and get total size
+    const statsCmd = [
+      `echo "CONTAINER:"`,
+      `find /root/.clawdbot/sessions/ /root/.clawdbot/agents/*/sessions/ -name '*.jsonl' -o -name '*.md' 2>/dev/null | wc -l`,
+      `du -sh /root/.clawdbot/sessions/ 2>/dev/null | cut -f1 || echo "0"`,
+      `echo "R2:"`,
+      `find ${R2_MOUNT_PATH}/clawdbot/sessions/ ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -name '*.jsonl' -o -name '*.md' 2>/dev/null | wc -l`,
+      `du -sh ${R2_MOUNT_PATH}/clawdbot/sessions/ 2>/dev/null | cut -f1 || echo "0"`,
+    ].join('; ');
+
+    const proc = await sandbox.startProcess(statsCmd);
+    await waitForProcess(proc, 10000);
+    const logs = await proc.getLogs();
+    const lines = (logs.stdout || '').trim().split('\n');
+
+    // Parse output (CONTAINER: count size R2: count size)
+    const containerCount = parseInt(lines[1]?.trim() || '0', 10);
+    const containerSize = lines[2]?.trim() || '0';
+    const r2Count = parseInt(lines[4]?.trim() || '0', 10);
+    const r2Size = lines[5]?.trim() || '0';
+
+    return c.json({
+      retentionDays,
+      retentionEnabled: retentionDays > 0,
+      container: {
+        sessionFiles: containerCount,
+        totalSize: containerSize,
+      },
+      r2Backup: {
+        sessionFiles: r2Count,
+        totalSize: r2Size,
+      },
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({
+      retentionDays,
+      retentionEnabled: retentionDays > 0,
+      error: errorMessage,
+    });
   }
 });
 

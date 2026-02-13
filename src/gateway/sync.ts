@@ -11,6 +11,19 @@ export interface SyncResult {
   details?: string;
 }
 
+export interface CleanupResult {
+  success: boolean;
+  deletedCount: number;
+  error?: string;
+  details?: string;
+}
+
+export interface PurgeResult {
+  success: boolean;
+  error?: string;
+  details?: string;
+}
+
 /**
  * Sync moltbot config from container to R2 for persistence.
  * 
@@ -87,9 +100,115 @@ export async function syncToR2(sandbox: Sandbox, env: MoltbotEnv): Promise<SyncR
       };
     }
   } catch (err) {
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: 'Sync error',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Delete session files older than the specified retention period.
+ *
+ * Targets JSONL session files in:
+ * - /root/.clawdbot/sessions/
+ * - /root/.clawdbot/agents/*/sessions/
+ * And their R2 backup equivalents.
+ *
+ * Preserves: memory files, skills, config, credentials.
+ *
+ * @param sandbox - The sandbox instance
+ * @param env - Worker environment bindings
+ * @returns CleanupResult with count of deleted files
+ */
+export async function cleanupOldSessions(sandbox: Sandbox, env: MoltbotEnv): Promise<CleanupResult> {
+  const retentionDays = parseInt(env.DATA_RETENTION_DAYS || '90', 10);
+
+  // Retention disabled
+  if (retentionDays <= 0) {
+    return { success: true, deletedCount: 0, details: 'Retention cleanup disabled (DATA_RETENTION_DAYS=0)' };
+  }
+
+  try {
+    // Find and delete old session files in the container
+    // Uses -mtime (modification time) to identify stale sessions
+    // Only targets *.jsonl and *.md files in sessions/ directories
+    const cleanupCmd = [
+      // Container session directories
+      `find /root/.clawdbot/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find /root/.clawdbot/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find /root/.clawdbot/agents/*/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find /root/.clawdbot/agents/*/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      // R2 backup session directories (if mounted)
+      `find ${R2_MOUNT_PATH}/clawdbot/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/clawdbot/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -name '*.jsonl' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -name '*.md' -mtime +${retentionDays} -delete -print 2>/dev/null`,
+    ].join('; ');
+
+    const proc = await sandbox.startProcess(cleanupCmd);
+    await waitForProcess(proc, 30000);
+
+    const logs = await proc.getLogs();
+    const stdout = logs.stdout?.trim() || '';
+    // Count deleted files (each -print outputs one line per deleted file)
+    const deletedCount = stdout ? stdout.split('\n').filter(line => line.length > 0).length : 0;
+
+    return {
+      success: true,
+      deletedCount,
+      details: deletedCount > 0
+        ? `Deleted ${deletedCount} session file(s) older than ${retentionDays} days`
+        : `No session files older than ${retentionDays} days found`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      deletedCount: 0,
+      error: 'Cleanup error',
+      details: err instanceof Error ? err.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Purge all session data from the container and R2 backup.
+ *
+ * Deletes all session files but preserves:
+ * - Memory files (MEMORY.md, daily logs)
+ * - Skills
+ * - Configuration
+ * - Credentials
+ *
+ * @param sandbox - The sandbox instance
+ * @param env - Worker environment bindings
+ * @returns PurgeResult
+ */
+export async function purgeSessions(sandbox: Sandbox, env: MoltbotEnv): Promise<PurgeResult> {
+  try {
+    // Mount R2 if configured (so we can purge the backup too)
+    if (env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.CF_ACCOUNT_ID) {
+      await mountR2Storage(sandbox, env);
+    }
+
+    const purgeCmd = [
+      // Container session directories
+      `rm -rf /root/.clawdbot/sessions/* 2>/dev/null`,
+      `find /root/.clawdbot/agents/*/sessions/ -type f -delete 2>/dev/null`,
+      // R2 backup session directories
+      `rm -rf ${R2_MOUNT_PATH}/clawdbot/sessions/* 2>/dev/null`,
+      `find ${R2_MOUNT_PATH}/clawdbot/agents/*/sessions/ -type f -delete 2>/dev/null`,
+    ].join('; ');
+
+    const proc = await sandbox.startProcess(purgeCmd);
+    await waitForProcess(proc, 30000);
+
+    return { success: true, details: 'All session data purged from container and R2 backup' };
+  } catch (err) {
+    return {
+      success: false,
+      error: 'Purge error',
       details: err instanceof Error ? err.message : 'Unknown error',
     };
   }
